@@ -57,11 +57,15 @@ function M.refresh()
   end
   state.running = true
   local current_generation = generation
-  vim.system(config.command, { text = true, timeout = config.timeout }, function(result)
+  local ok, err = pcall(vim.system, config.command, { text = true, timeout = config.timeout }, function(result)
     vim.schedule(function()
       apply_result(result, current_generation)
     end)
   end)
+  if not ok then
+    state.running = false
+    state.last_error = vim.trim(tostring(err))
+  end
 end
 
 function M.start()

@@ -49,5 +49,15 @@ end
 assert(require("lualine.components.ring"):update_status() == "!0")
 assert(require("ring.integrations.heirline").provider() == "!0")
 
+-- vim.system 同步 throw（ENOENT：執行檔不在 PATH）不該炸掉 setup / statusline
+vim.system = function()
+  error("ENOENT: no such file or directory (cmd): 'ring-not-on-path'")
+end
+local ok_setup = pcall(ring.setup, { command = { "ring-not-on-path" }, interval = 0 })
+assert(ok_setup, "setup must not propagate ENOENT")
+assert(ring.get_state().running == false, "running must unlatch after spawn failure")
+assert(ring.get_state().last_error:find("ENOENT") ~= nil)
+assert(ring.status() == "")
+
 ring.stop()
 print("ring.nvim tests passed")
