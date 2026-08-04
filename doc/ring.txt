@@ -1,0 +1,161 @@
+*ring.txt*                  Neovim statusline integration for RiNG
+
+==============================================================================
+CONTENTS                                                       *ring-contents*
+
+  1. Introduction .......................................... |ring-intro|
+  2. Requirements ................................... |ring-requirements|
+  3. Installation ................................... |ring-installation|
+  4. Configuration ................................. |ring-configuration|
+  5. Commands ........................................... |ring-commands|
+  6. Lua API ................................................ |ring-api|
+  7. Health ............................................. |ring-health|
+
+==============================================================================
+1. INTRODUCTION                                     *ring.nvim* *ring-intro*
+
+ring.nvim polls the RiNG CLI (https://github.com/Lee-W/ring) with
+`ring --format json` and renders the number of agent sessions waiting on you
+in the statusline, e.g. `🔴3`.
+
+Polling runs through |vim.system()| and never blocks statusline rendering.
+A failed refresh keeps the last successful count, so a transient error does
+not blank the statusline.
+
+==============================================================================
+2. REQUIREMENTS                                          *ring-requirements*
+
+  - Neovim 0.10+
+  - `ring` available in $PATH (or a custom |ring-command| pointing at it)
+  - lualine.nvim or heirline.nvim
+
+==============================================================================
+3. INSTALLATION                                          *ring-installation*
+
+With lazy.nvim and lualine: >lua
+
+    {
+      "Lee-W/ring.nvim",
+      dependencies = { "nvim-lualine/lualine.nvim" },
+      config = function()
+        require("ring").setup()
+        require("lualine").setup({
+          sections = {
+            lualine_x = { "ring" },
+          },
+        })
+      end,
+    }
+<
+With heirline: >lua
+
+    require("ring").setup()
+
+    require("heirline").setup({
+      statusline = {
+        -- your other components...
+        require("ring.integrations.heirline"),
+      },
+    })
+<
+==============================================================================
+4. CONFIGURATION                                        *ring-configuration*
+
+Defaults: >lua
+
+    require("ring").setup({
+      command = { "ring", "--format", "json" },
+      interval = 2000,
+      timeout = 5000,
+      icon = "🔴",
+      error_icon = nil,
+      hide_when_zero = true,
+    })
+<
+                                                            *ring-command*
+command ~
+        List of strings. The argv used to query RiNG. Setting it replaces
+        the default argv entirely — include `--format` `json` yourself, since
+        the output is parsed as RiNG's JSON. Must be a non-empty list of
+        strings.
+
+interval ~
+        Number of milliseconds between polls. `0` disables periodic polling;
+        the count then only updates on |:RingRefresh| or the initial
+        |ring.setup()|.
+
+timeout ~
+        Milliseconds before a single `ring` invocation is killed. A timeout is
+        reported separately from an ordinary failure. Must be greater than
+        zero.
+
+icon ~
+        String prefixed to the waiting count, e.g. `🔴` renders as `🔴3`.
+
+                                                         *ring-error_icon*
+error_icon ~
+        String shown instead of the count while the last refresh failed.
+        Defaults to `nil`, which keeps the previous behaviour: errors stay
+        invisible in the statusline and are only reported by
+        |:checkhealth| |ring|. Set it to surface breakage, e.g. `"⚠"`.
+
+hide_when_zero ~
+        When `true` (the default) |ring.status()| returns an empty string
+        while nothing is waiting, so the component disappears.
+
+==============================================================================
+5. COMMANDS                                                  *ring-commands*
+
+                                                              *:RingRefresh*
+:RingRefresh            Poll RiNG immediately, without waiting for the next
+                        interval tick. A refresh already in flight is not
+                        duplicated.
+
+==============================================================================
+6. LUA API                                                        *ring-api*
+
+                                                            *ring.setup()*
+ring.setup({opts})
+        Validate {opts}, replace the current configuration, reset the cached
+        count and error, and start polling. Safe to call again to
+        reconfigure. Invalid options raise an error.
+
+                                                           *ring.status()*
+ring.status()
+        Return the statusline string. This is what the bundled lualine and
+        heirline components call. Starts polling on first use.
+
+                                                          *ring.refresh()*
+ring.refresh()
+        Trigger one poll. No-op while a refresh is in flight or after
+        |ring.stop()|.
+
+                                                             *ring.stop()*
+ring.stop()
+        Stop polling for good and release the timer. Statusline redraws will
+        not restart it; call |ring.setup()| to resume. Invoked automatically
+        on |VimLeavePre|.
+
+                                                        *ring.get_state()*
+ring.get_state()
+        Return a copy of the poll state: >lua
+
+            {
+              waiting = 0,      -- last successful count
+              running = false,  -- a refresh is in flight
+              last_error = nil, -- message from the last failed refresh
+              updated_at = nil, -- os.time() of the last success
+            }
+<
+                                                       *ring.get_config()*
+ring.get_config()
+        Return a copy of the active configuration.
+
+==============================================================================
+7. HEALTH                                                      *ring-health*
+
+`:checkhealth ring` reports the Neovim version, whether the configured
+|ring-command| executable is on $PATH, and the message from the most recent
+failed refresh.
+
+vim:tw=78:ts=8:noet:ft=help:norl:
