@@ -1,5 +1,7 @@
 # ring.nvim
 
+[![CI](https://github.com/Lee-W/ring.nvim/actions/workflows/ci.yml/badge.svg)](https://github.com/Lee-W/ring.nvim/actions/workflows/ci.yml)
+
 Neovim statusline integration for [RiNG](https://github.com/Lee-W/ring). It polls
 `ring --format json` asynchronously and shows `🔴N` while agent sessions are waiting for you.
 
@@ -51,13 +53,25 @@ require("ring").setup({
   interval = 2000, -- milliseconds; 0 disables periodic polling
   timeout = 5000,
   icon = "🔴",
+  error_icon = nil, -- shown instead of the count while the last refresh failed
   hide_when_zero = true,
 })
 ```
 
+`command` replaces the default argv entirely, so keep `--format json` if you point it elsewhere.
+
 Polling runs through `vim.system()` and never blocks statusline rendering. Failed refreshes keep the
-last successful count. Use `:RingRefresh` to refresh immediately and `:checkhealth ring` to inspect
-the integration.
+last successful count. By default a failure is invisible in the statusline — set `error_icon` (e.g.
+`"⚠"`) if you would rather see it. Use `:RingRefresh` to refresh immediately, `:checkhealth ring` to
+inspect the integration, and `:help ring.nvim` for the full reference.
+
+## Development
+
+```sh
+make test          # headless test suite
+make format-check  # stylua --check
+make format        # stylua, in place
+```
 
 ## License
 
