@@ -8,13 +8,15 @@ function M.check()
     vim.health.error("Neovim 0.10+ is required")
   end
 
-  if vim.fn.executable("ring") == 1 then
-    vim.health.ok("ring executable found")
+  local ring = require("ring")
+  local executable = ring.get_config().command[1]
+  if vim.fn.executable(executable) == 1 then
+    vim.health.ok(("%s executable found"):format(executable))
   else
-    vim.health.error("ring executable not found in PATH")
+    vim.health.error(("%s executable not found in PATH"):format(executable))
   end
 
-  local state = require("ring").get_state()
+  local state = ring.get_state()
   if state.last_error then
     vim.health.warn(state.last_error)
   end
