@@ -7,6 +7,10 @@ local defaults = {
   icon = "🔴",
   error_icon = nil,
   hide_when_zero = true,
+  notify = false,
+  notify_level = vim.log.levels.INFO,
+  notify_title = "RiNG",
+  on_change = nil,
 }
 
 -- `vim.system()` reports a timeout as exit code 124, mirroring timeout(1).
@@ -38,12 +42,33 @@ local function check_type(name, value, expected)
   end
 end
 
+-- on_change reports every movement; the built-in notification deliberately does
+-- not. A count that stays put would repeat on each poll, and a session that
+-- stops waiting has already been dealt with, so only a rising edge interrupts.
+local function announce(waiting, previous)
+  if config.on_change then
+    -- pcall: a broken callback must not take the poll loop down with it.
+    local ok, err = pcall(config.on_change, waiting, previous)
+    if not ok then
+      vim.notify("ring.nvim: on_change failed: " .. tostring(err), vim.log.levels.ERROR)
+    end
+  end
+  if config.notify and waiting > previous then
+    vim.notify(
+      ("%d session%s waiting"):format(waiting, waiting > 1 and "s" or ""),
+      config.notify_level,
+      { title = config.notify_title }
+    )
+  end
+end
+
 local function finish(current_generation, waiting, err)
   if current_generation ~= generation then
     return
   end
   state.running = false
 
+  local previous = state.waiting
   local changed = state.last_error ~= err or (waiting ~= nil and state.waiting ~= waiting)
   state.last_error = err
   if waiting ~= nil then
@@ -52,6 +77,9 @@ local function finish(current_generation, waiting, err)
   end
   if changed then
     redraw()
+  end
+  if waiting ~= nil and waiting ~= previous then
+    announce(waiting, previous)
   end
 end
 
@@ -137,6 +165,10 @@ function M.setup(opts)
   check_type("icon", opts.icon, "string")
   check_type("error_icon", opts.error_icon, "string")
   check_type("hide_when_zero", opts.hide_when_zero, "boolean")
+  check_type("notify", opts.notify, "boolean")
+  check_type("notify_level", opts.notify_level, "number")
+  check_type("notify_title", opts.notify_title, "string")
+  check_type("on_change", opts.on_change, "function")
 
   if opts.command then
     local all_strings = vim.iter(opts.command):all(function(value)

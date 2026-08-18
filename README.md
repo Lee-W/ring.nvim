@@ -55,10 +55,38 @@ require("ring").setup({
   icon = "🔴",
   error_icon = nil, -- shown instead of the count while the last refresh failed
   hide_when_zero = true,
+  notify = false, -- announce a rising waiting count through vim.notify
+  notify_level = vim.log.levels.INFO,
+  notify_title = "RiNG",
+  on_change = nil, -- function(waiting, previous), called on every movement
 })
 ```
 
 `command` replaces the default argv entirely, so keep `--format json` if you point it elsewhere.
+
+## Notifications
+
+A count in the corner is easy to miss while typing. Set `notify = true` to have a rising waiting
+count announced through `vim.notify()`, so whichever notifier you use (noice.nvim,
+snacks.notifier, the built-in) surfaces it:
+
+```lua
+{ "Lee-W/ring.nvim", opts = { notify = true } }
+```
+
+Only a rise notifies: a steady count would repeat on every poll, and a session that stops waiting
+has already been dealt with. For anything else, `on_change(waiting, previous)` fires on every
+movement in either direction and leaves the presentation to you:
+
+```lua
+opts = {
+  on_change = function(waiting, previous)
+    if waiting == 0 and previous > 0 then
+      vim.notify("all clear")
+    end
+  end,
+}
+```
 
 Polling runs through `vim.system()` and never blocks statusline rendering. Failed refreshes keep the
 last successful count. By default a failure is invisible in the statusline — set `error_icon` (e.g.

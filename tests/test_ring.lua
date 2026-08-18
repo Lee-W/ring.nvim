@@ -211,6 +211,18 @@ case("setup() validates option types", function()
   assert_error(function()
     ring.setup({ hide_when_zero = "yes" })
   end, "hide_when_zero must be a boolean")
+  assert_error(function()
+    ring.setup({ notify = "yes" })
+  end, "notify must be a boolean")
+  assert_error(function()
+    ring.setup({ notify_level = "loud" })
+  end, "notify_level must be a number")
+  assert_error(function()
+    ring.setup({ notify_title = 1 })
+  end, "notify_title must be a string")
+  assert_error(function()
+    ring.setup({ on_change = "nope" })
+  end, "on_change must be a function")
 end)
 
 case("setup() rejects malformed commands and ranges", function()
@@ -227,6 +239,81 @@ case("setup() rejects malformed commands and ranges", function()
   assert_error(function()
     ring.setup({ timeout = 0 })
   end, "timeout must be greater than zero")
+end)
+
+case("on_change reports every movement with the previous count", function()
+  local seen = {}
+  stub_system({ counts(2), counts(2), counts(0) })
+  ring.setup({
+    interval = 0,
+    on_change = function(waiting, previous)
+      seen[#seen + 1] = { waiting = waiting, previous = previous }
+    end,
+  })
+  wait_idle()
+  ring.refresh() -- unchanged count: must not fire again
+  wait_idle()
+  ring.refresh()
+  wait_for(function()
+    return #seen == 2
+  end, "on_change never saw the drop back to zero")
+  assert(seen[1].waiting == 2 and seen[1].previous == 0, vim.inspect(seen[1]))
+  assert(seen[2].waiting == 0 and seen[2].previous == 2, vim.inspect(seen[2]))
+end)
+
+case("a failing on_change never breaks the poll loop", function()
+  stub_system({ counts(3) })
+  ring.setup({
+    interval = 0,
+    on_change = function()
+      error("boom")
+    end,
+  })
+  wait_for(function()
+    return ring.get_state().waiting == 3
+  end, "waiting count never reached 3")
+  assert(ring.get_state().last_error == nil, tostring(ring.get_state().last_error))
+end)
+
+case("notify only fires on a rising edge", function()
+  local messages = {}
+  local real_notify = vim.notify
+  vim.notify = function(msg, level, opts)
+    messages[#messages + 1] = { msg = msg, level = level, title = opts and opts.title }
+  end
+  local ok, err = pcall(function()
+    stub_system({ counts(1), counts(0), counts(2) })
+    ring.setup({ interval = 0, notify = true })
+    wait_idle()
+    ring.refresh() -- 1 -> 0 is a change, but not worth interrupting for
+    wait_idle()
+    ring.refresh()
+    wait_for(function()
+      return ring.get_state().waiting == 2
+    end, "waiting count never reached 2")
+  end)
+  vim.notify = real_notify
+  assert(ok, tostring(err))
+  assert(#messages == 2, ("expected 2 notifications, got %d"):format(#messages))
+  assert(messages[1].msg == "1 session waiting", messages[1].msg)
+  assert(messages[2].msg == "2 sessions waiting", messages[2].msg)
+  assert(messages[1].title == "RiNG", tostring(messages[1].title))
+end)
+
+case("notify stays silent unless it is switched on", function()
+  local messages = 0
+  local real_notify = vim.notify
+  vim.notify = function()
+    messages = messages + 1
+  end
+  local ok = pcall(function()
+    stub_system({ counts(4) })
+    ring.setup({ interval = 0 })
+    wait_idle()
+  end)
+  vim.notify = real_notify
+  assert(ok)
+  assert(messages == 0, ("expected silence, got %d notifications"):format(messages))
 end)
 
 case("statusline integrations delegate to status()", function()

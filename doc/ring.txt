@@ -70,6 +70,10 @@ Defaults: >lua
       icon = "🔴",
       error_icon = nil,
       hide_when_zero = true,
+      notify = false,
+      notify_level = vim.log.levels.INFO,
+      notify_title = "RiNG",
+      on_change = nil,
     })
 <
                                                             *ring-command*
@@ -102,6 +106,30 @@ error_icon ~
 hide_when_zero ~
         When `true` (the default) |ring.status()| returns an empty string
         while nothing is waiting, so the component disappears.
+
+                                                             *ring-notify*
+notify ~
+        When `true`, a rising waiting count is announced through |vim.notify()|
+        as e.g. `2 sessions waiting`. Defaults to `false`: a statusline
+        component that suddenly started interrupting would be a surprise on
+        upgrade. Only a rise notifies — a steady count would repeat on every
+        poll, and a count that falls needs no announcement.
+
+notify_level ~
+        Level passed to |vim.notify()|, e.g. `vim.log.levels.WARN` to make the
+        message louder and longer-lived. Only consulted when `notify` is on.
+
+notify_title ~
+        Title passed to |vim.notify()|, which notifier UIs render as a heading.
+        Only consulted when `notify` is on.
+
+                                                          *ring-on_change*
+on_change ~
+        Function called as `on_change(waiting, previous)` whenever the waiting
+        count moves, in either direction — including down, and including a
+        drop to zero, which is what `notify` deliberately stays quiet about.
+        Use it to drive any UI the built-in notification does not cover. Errors
+        raised inside it are reported and swallowed so polling survives.
 
 ==============================================================================
 5. COMMANDS                                                  *ring-commands*
