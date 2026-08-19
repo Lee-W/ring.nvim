@@ -5,16 +5,26 @@ local ring = require("ring")
 
 local real_system = vim.system
 local real_health = vim.health
+local real_notify = vim.notify
 
 local cases = {}
 local calls
+local notifications
 
 local function case(name, fn)
   cases[#cases + 1] = { name = name, fn = fn }
 end
 
+local function snapshot(waiting, sessions)
+  return {
+    code = 0,
+    stdout = vim.json.encode({ counts = { waiting = waiting }, sessions = sessions }),
+    stderr = "",
+  }
+end
+
 local function counts(waiting)
-  return { code = 0, stdout = ('{"counts":{"waiting":%d}}'):format(waiting), stderr = "" }
+  return snapshot(waiting)
 end
 
 -- Replaces vim.system with a stub that hands back queued results synchronously
@@ -66,6 +76,7 @@ case("reports the waiting count", function()
     return ring.get_state().waiting == 2
   end, "waiting count never reached 2")
   assert(ring.status() == "🔴2", ring.status())
+  assert(notifications[1].message == "2 agent sessions are waiting for you")
 end)
 
 case("hides a zero count by default", function()
@@ -156,6 +167,70 @@ case("clears the error state once a refresh succeeds again", function()
   assert(ring.status() == "🔴1", ring.status())
 end)
 
+case("notifies only when a session newly enters waiting", function()
+  local session_a = { session_id = "a", status = "waiting" }
+  local session_b = { session_id = "b", status = "waiting" }
+  stub_system({
+    snapshot(1, { session_a }),
+    snapshot(1, { session_a }),
+    snapshot(1, { session_b }),
+    snapshot(0, {}),
+    snapshot(1, { session_b }),
+  })
+  ring.setup({ interval = 0 })
+  wait_idle()
+  assert(#notifications == 1, vim.inspect(notifications))
+  assert(notifications[1].message == "An agent session is waiting for you")
+  assert(notifications[1].level == vim.log.levels.WARN)
+  assert(notifications[1].opts.title == "RiNG")
+
+  ring.refresh()
+  wait_idle()
+  assert(#notifications == 1, "an unchanged waiting session notified again")
+
+  ring.refresh()
+  wait_idle()
+  assert(#notifications == 2, "a replacement session was not detected")
+
+  ring.refresh()
+  wait_idle()
+  ring.refresh()
+  wait_idle()
+  assert(#notifications == 3, "a session re-entering waiting was not detected")
+end)
+
+case("notifications can be configured and toggled at runtime", function()
+  local session_a = { session_id = "a", status = "waiting" }
+  local session_b = { session_id = "b", status = "waiting" }
+  local session_c = { session_id = "c", status = "waiting" }
+  stub_system({
+    snapshot(1, { session_a }),
+    snapshot(2, { session_a, session_b }),
+    snapshot(2, { session_a, session_b }),
+    snapshot(3, { session_a, session_b, session_c }),
+  })
+  ring.setup({ interval = 0, notify = false })
+  wait_idle()
+  assert(ring.get_state().notify_enabled == false)
+
+  ring.refresh()
+  wait_idle()
+  assert(#notifications == 0, "disabled notifications must stay silent")
+
+  assert(ring.toggle_notify() == true)
+  assert(ring.get_state().notify_enabled == true)
+  ring.refresh()
+  wait_idle()
+  assert(#notifications == 0, "enabling notifications replayed existing waits")
+
+  ring.refresh()
+  wait_idle()
+  assert(#notifications == 1, "new waits should notify after enabling")
+  assert(notifications[1].message == "An agent session is waiting for you")
+  assert(ring.set_notify(false) == false)
+  assert(ring.get_state().notify_enabled == false)
+end)
+
 case("polls repeatedly on a positive interval", function()
   stub_system({})
   ring.setup({ interval = 10 })
@@ -223,6 +298,9 @@ case("setup() validates option types", function()
   assert_error(function()
     ring.setup({ on_change = "nope" })
   end, "on_change must be a function")
+  assert_error(function()
+    ring.set_notify("yes")
+  end, "enabled must be a boolean")
 end)
 
 case("setup() rejects malformed commands and ranges", function()
@@ -275,45 +353,24 @@ case("a failing on_change never breaks the poll loop", function()
   assert(ring.get_state().last_error == nil, tostring(ring.get_state().last_error))
 end)
 
-case("notify only fires on a rising edge", function()
-  local messages = {}
-  local real_notify = vim.notify
-  vim.notify = function(msg, level, opts)
-    messages[#messages + 1] = { msg = msg, level = level, title = opts and opts.title }
-  end
-  local ok, err = pcall(function()
-    stub_system({ counts(1), counts(0), counts(2) })
-    ring.setup({ interval = 0, notify = true })
-    wait_idle()
-    ring.refresh() -- 1 -> 0 is a change, but not worth interrupting for
-    wait_idle()
-    ring.refresh()
-    wait_for(function()
-      return ring.get_state().waiting == 2
-    end, "waiting count never reached 2")
-  end)
-  vim.notify = real_notify
-  assert(ok, tostring(err))
-  assert(#messages == 2, ("expected 2 notifications, got %d"):format(#messages))
-  assert(messages[1].msg == "1 session waiting", messages[1].msg)
-  assert(messages[2].msg == "2 sessions waiting", messages[2].msg)
-  assert(messages[1].title == "RiNG", tostring(messages[1].title))
+case("notifications honour a custom level and title", function()
+  stub_system({ counts(1) })
+  ring.setup({
+    interval = 0,
+    notify_level = vim.log.levels.INFO,
+    notify_title = "Agent desk",
+  })
+  wait_idle()
+  assert(#notifications == 1, vim.inspect(notifications))
+  assert(notifications[1].level == vim.log.levels.INFO)
+  assert(notifications[1].opts.title == "Agent desk")
 end)
 
-case("notify stays silent unless it is switched on", function()
-  local messages = 0
-  local real_notify = vim.notify
-  vim.notify = function()
-    messages = messages + 1
-  end
-  local ok = pcall(function()
-    stub_system({ counts(4) })
-    ring.setup({ interval = 0 })
-    wait_idle()
-  end)
-  vim.notify = real_notify
-  assert(ok)
-  assert(messages == 0, ("expected silence, got %d notifications"):format(messages))
+case("notifications can start disabled", function()
+  stub_system({ counts(4) })
+  ring.setup({ interval = 0, notify = false })
+  wait_idle()
+  assert(#notifications == 0, ("expected silence, got %d notifications"):format(#notifications))
 end)
 
 case("statusline integrations delegate to status()", function()
@@ -373,12 +430,32 @@ case("checkhealth inspects the configured executable, not a hardcoded one", func
   assert(found, "checkhealth did not report the configured executable: " .. vim.inspect(reported))
 end)
 
+case(":RingNotifyToggle changes state and confirms the result", function()
+  stub_system({ counts(0) })
+  ring.setup({ interval = 0 })
+  wait_idle()
+  dofile(root .. "/plugin/ring.lua")
+
+  vim.cmd("RingNotifyToggle")
+  assert(ring.get_state().notify_enabled == false)
+  assert(notifications[#notifications].message == "RiNG notifications disabled")
+
+  vim.cmd("RingNotifyToggle")
+  assert(ring.get_state().notify_enabled == true)
+  assert(notifications[#notifications].message == "RiNG notifications enabled")
+end)
+
 local failures = {}
 for _, item in ipairs(cases) do
+  notifications = {}
+  vim.notify = function(message, level, opts)
+    notifications[#notifications + 1] = { message = message, level = level, opts = opts }
+  end
   local ok, err = pcall(item.fn)
   pcall(ring.stop)
   vim.system = real_system
   vim.health = real_health
+  vim.notify = real_notify
   if ok then
     print("ok   - " .. item.name)
   else

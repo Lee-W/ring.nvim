@@ -7,6 +7,13 @@ vim.api.nvim_create_user_command("RingRefresh", function()
   require("ring").refresh()
 end, { desc = "Refresh ring.nvim status" })
 
+vim.api.nvim_create_user_command("RingNotifyToggle", function()
+  local enabled = require("ring").toggle_notify()
+  vim.notify("RiNG notifications " .. (enabled and "enabled" or "disabled"), vim.log.levels.INFO, {
+    title = "RiNG",
+  })
+end, { desc = "Toggle ring.nvim waiting notifications" })
+
 vim.api.nvim_create_autocmd("VimLeavePre", {
   callback = function()
     require("ring").stop()

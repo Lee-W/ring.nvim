@@ -7,8 +7,8 @@ local defaults = {
   icon = "🔴",
   error_icon = nil,
   hide_when_zero = true,
-  notify = false,
-  notify_level = vim.log.levels.INFO,
+  notify = true,
+  notify_level = vim.log.levels.WARN,
   notify_title = "RiNG",
   on_change = nil,
 }
@@ -21,11 +21,13 @@ local timer
 local started = false
 local shutdown = false
 local generation = 0
+local waiting_session_ids
 local state = {
   waiting = 0,
   running = false,
   last_error = nil,
   updated_at = nil,
+  notify_enabled = defaults.notify,
 }
 
 local function redraw()
@@ -42,27 +44,70 @@ local function check_type(name, value, expected)
   end
 end
 
--- on_change reports every movement; the built-in notification deliberately does
--- not. A count that stays put would repeat on each poll, and a session that
--- stops waiting has already been dealt with, so only a rising edge interrupts.
-local function announce(waiting, previous)
+local function run_on_change(waiting, previous)
   if config.on_change then
     -- pcall: a broken callback must not take the poll loop down with it.
     local ok, err = pcall(config.on_change, waiting, previous)
     if not ok then
-      vim.notify("ring.nvim: on_change failed: " .. tostring(err), vim.log.levels.ERROR)
+      pcall(vim.notify, "ring.nvim: on_change failed: " .. tostring(err), vim.log.levels.ERROR)
     end
-  end
-  if config.notify and waiting > previous then
-    vim.notify(
-      ("%d session%s waiting"):format(waiting, waiting > 1 and "s" or ""),
-      config.notify_level,
-      { title = config.notify_title }
-    )
   end
 end
 
-local function finish(current_generation, waiting, err)
+local function get_waiting_session_ids(data, waiting)
+  if type(data.sessions) ~= "table" then
+    return nil
+  end
+
+  local ids = {}
+  local count = 0
+  for _, session in ipairs(data.sessions) do
+    if type(session) == "table" and session.status == "waiting" then
+      if type(session.session_id) ~= "string" or session.session_id == "" then
+        return nil
+      end
+      ids[session.session_id] = true
+      count = count + 1
+    end
+  end
+
+  -- A partial or non-standard session list is not reliable enough for diffing.
+  if count ~= waiting then
+    return nil
+  end
+  return ids
+end
+
+local function count_new_waiting(waiting, session_ids)
+  local new_waiting = math.max(waiting - state.waiting, 0)
+  if session_ids and waiting_session_ids then
+    new_waiting = 0
+    for session_id in pairs(session_ids) do
+      if not waiting_session_ids[session_id] then
+        new_waiting = new_waiting + 1
+      end
+    end
+  end
+  waiting_session_ids = session_ids
+  return new_waiting
+end
+
+local function notify_waiting(count)
+  if not state.notify_enabled or count == 0 then
+    return
+  end
+
+  local message
+  if count == 1 then
+    message = "An agent session is waiting for you"
+  else
+    message = ("%d agent sessions are waiting for you"):format(count)
+  end
+  -- A notification provider should never be able to break polling.
+  pcall(vim.notify, message, config.notify_level, { title = config.notify_title })
+end
+
+local function finish(current_generation, waiting, err, session_ids)
   if current_generation ~= generation then
     return
   end
@@ -72,14 +117,16 @@ local function finish(current_generation, waiting, err)
   local changed = state.last_error ~= err or (waiting ~= nil and state.waiting ~= waiting)
   state.last_error = err
   if waiting ~= nil then
+    local new_waiting = count_new_waiting(waiting, session_ids)
     state.waiting = waiting
     state.updated_at = os.time()
+    notify_waiting(new_waiting)
   end
   if changed then
     redraw()
   end
   if waiting ~= nil and waiting ~= previous then
-    announce(waiting, previous)
+    run_on_change(waiting, previous)
   end
 end
 
@@ -105,7 +152,7 @@ local function apply_result(result, current_generation)
     return finish(current_generation, nil, "ring returned invalid JSON")
   end
 
-  finish(current_generation, waiting, nil)
+  finish(current_generation, waiting, nil, get_waiting_session_ids(data, waiting))
 end
 
 local function teardown()
@@ -193,6 +240,8 @@ function M.setup(opts)
   state.waiting = 0
   state.last_error = nil
   state.updated_at = nil
+  state.notify_enabled = config.notify
+  waiting_session_ids = nil
   M.start()
 end
 
@@ -213,6 +262,18 @@ end
 
 function M.get_config()
   return vim.deepcopy(config)
+end
+
+function M.set_notify(enabled)
+  if type(enabled) ~= "boolean" then
+    error(("ring.nvim: enabled must be a boolean, got %s"):format(type(enabled)), 0)
+  end
+  state.notify_enabled = enabled
+  return enabled
+end
+
+function M.toggle_notify()
+  return M.set_notify(not state.notify_enabled)
 end
 
 return M
