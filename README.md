@@ -3,7 +3,8 @@
 [![CI](https://github.com/Lee-W/ring.nvim/actions/workflows/ci.yml/badge.svg)](https://github.com/Lee-W/ring.nvim/actions/workflows/ci.yml)
 
 Neovim statusline integration for [RiNG](https://github.com/Lee-W/ring). It polls
-`ring --format json` asynchronously and shows `🔴N` while agent sessions are waiting for you.
+`ring --format json` asynchronously, shows `🔴N` while agent sessions are waiting for you, and sends
+a Neovim notification when a session newly enters the waiting state.
 
 ## Requirements
 
@@ -55,8 +56,8 @@ require("ring").setup({
   icon = "🔴",
   error_icon = nil, -- shown instead of the count while the last refresh failed
   hide_when_zero = true,
-  notify = false, -- announce a rising waiting count through vim.notify
-  notify_level = vim.log.levels.INFO,
+  notify = true, -- use vim.notify() for newly waiting sessions
+  notify_level = vim.log.levels.WARN,
   notify_title = "RiNG",
   on_change = nil, -- function(waiting, previous), called on every movement
 })
@@ -66,17 +67,21 @@ require("ring").setup({
 
 ## Notifications
 
-A count in the corner is easy to miss while typing. Set `notify = true` to have a rising waiting
-count announced through `vim.notify()`, so whichever notifier you use (noice.nvim,
-snacks.notifier, the built-in) surfaces it:
+A count in the corner is easy to miss while typing, so notifications are enabled by default.
+`vim.notify()` lets whichever notifier you use (noice.nvim, snacks.notifier, or the built-in)
+surface a session that needs attention. Disable them at startup or toggle them at runtime:
 
 ```lua
-{ "Lee-W/ring.nvim", opts = { notify = true } }
+{ "Lee-W/ring.nvim", opts = { notify = false } }
+
+-- Later, without reconfiguring:
+vim.cmd.RingNotifyToggle()
 ```
 
-Only a rise notifies: a steady count would repeat on every poll, and a session that stops waiting
-has already been dealt with. For anything else, `on_change(waiting, previous)` fires on every
-movement in either direction and leaves the presentation to you:
+Each session notifies once when it enters the waiting state. Session IDs prevent repeated alerts
+and detect a replacement even when the total count stays unchanged; counts-only custom commands
+fall back to notifying on a rise. For other count changes, `on_change(waiting, previous)` fires on
+every movement in either direction and leaves the presentation to you:
 
 ```lua
 opts = {
@@ -90,8 +95,8 @@ opts = {
 
 Polling runs through `vim.system()` and never blocks statusline rendering. Failed refreshes keep the
 last successful count. By default a failure is invisible in the statusline — set `error_icon` (e.g.
-`"⚠"`) if you would rather see it. Use `:RingRefresh` to refresh immediately, `:checkhealth ring` to
-inspect the integration, and `:help ring.nvim` for the full reference.
+`"⚠"`) if you would rather see it. Use `:RingRefresh` to refresh immediately, `:checkhealth ring`
+to inspect the integration, and `:help ring.nvim` for the full reference.
 
 ## Development
 

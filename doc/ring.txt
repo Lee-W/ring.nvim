@@ -16,7 +16,8 @@ CONTENTS                                                       *ring-contents*
 
 ring.nvim polls the RiNG CLI (https://github.com/Lee-W/ring) with
 `ring --format json` and renders the number of agent sessions waiting on you
-in the statusline, e.g. `🔴3`.
+in the statusline, e.g. `🔴3`. It also calls |vim.notify()| once when a session
+newly enters the waiting state.
 
 Polling runs through |vim.system()| and never blocks statusline rendering.
 A failed refresh keeps the last successful count, so a transient error does
@@ -70,8 +71,8 @@ Defaults: >lua
       icon = "🔴",
       error_icon = nil,
       hide_when_zero = true,
-      notify = false,
-      notify_level = vim.log.levels.INFO,
+      notify = true,
+      notify_level = vim.log.levels.WARN,
       notify_title = "RiNG",
       on_change = nil,
     })
@@ -109,19 +110,19 @@ hide_when_zero ~
 
                                                              *ring-notify*
 notify ~
-        When `true`, a rising waiting count is announced through |vim.notify()|
-        as e.g. `2 sessions waiting`. Defaults to `false`: a statusline
-        component that suddenly started interrupting would be a surprise on
-        upgrade. Only a rise notifies — a steady count would repeat on every
-        poll, and a count that falls needs no announcement.
+        When `true` (the default), call |vim.notify()| when a session newly
+        enters the waiting state. Session IDs prevent repeated notifications
+        and detect replacement sessions even when the total count is unchanged.
+        Counts-only custom commands fall back to detecting a rising count. Use
+        |:RingNotifyToggle| to change this at runtime without reconfiguring.
 
 notify_level ~
-        Level passed to |vim.notify()|, e.g. `vim.log.levels.WARN` to make the
-        message louder and longer-lived. Only consulted when `notify` is on.
+        Level passed to |vim.notify()|. Defaults to `vim.log.levels.WARN`.
+        Only consulted when notifications are on.
 
 notify_title ~
         Title passed to |vim.notify()|, which notifier UIs render as a heading.
-        Only consulted when `notify` is on.
+        Defaults to `"RiNG"`. Only consulted when notifications are on.
 
                                                           *ring-on_change*
 on_change ~
@@ -138,6 +139,11 @@ on_change ~
 :RingRefresh            Poll RiNG immediately, without waiting for the next
                         interval tick. A refresh already in flight is not
                         duplicated.
+
+                                                         *:RingNotifyToggle*
+:RingNotifyToggle       Toggle waiting notifications for the current Neovim
+                        session and confirm the new state. The initial state
+                        comes from |ring-notify|.
 
 ==============================================================================
 6. LUA API                                                        *ring-api*
@@ -173,11 +179,22 @@ ring.get_state()
               running = false,  -- a refresh is in flight
               last_error = nil, -- message from the last failed refresh
               updated_at = nil, -- os.time() of the last success
+              notify_enabled = true, -- current runtime notification state
             }
 <
                                                        *ring.get_config()*
 ring.get_config()
         Return a copy of the active configuration.
+
+                                                       *ring.set_notify()*
+ring.set_notify({enabled})
+        Enable or disable waiting notifications at runtime and return the new
+        boolean state. {enabled} must be a boolean.
+
+                                                    *ring.toggle_notify()*
+ring.toggle_notify()
+        Toggle waiting notifications at runtime and return the new boolean
+        state.
 
 ==============================================================================
 7. HEALTH                                                      *ring-health*
