@@ -78,10 +78,12 @@ surface a session that needs attention. Disable them at startup or toggle them a
 vim.cmd.RingNotifyToggle()
 ```
 
-Each session notifies once when it enters the waiting state. Session IDs prevent repeated alerts
-and detect a replacement even when the total count stays unchanged; counts-only custom commands
-fall back to notifying on a rise. For other count changes, `on_change(waiting, previous)` fires on
-every movement in either direction and leaves the presentation to you:
+The first successful poll silently establishes a baseline, so opening Neovim does not announce
+sessions that were already waiting. After that, each session notifies once when it enters the
+waiting state. Session IDs prevent repeated alerts and detect a replacement even when the total
+count stays unchanged; counts-only custom commands fall back to notifying on a rise. For other count
+changes, `on_change(waiting, previous)` fires on every movement in either direction and leaves the
+presentation to you:
 
 ```lua
 opts = {

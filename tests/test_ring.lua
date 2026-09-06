@@ -76,7 +76,7 @@ case("reports the waiting count", function()
     return ring.get_state().waiting == 2
   end, "waiting count never reached 2")
   assert(ring.status() == "🔴2", ring.status())
-  assert(notifications[1].message == "2 agent sessions are waiting for you")
+  assert(#notifications == 0, "the initial snapshot must not notify")
 end)
 
 case("hides a zero count by default", function()
@@ -179,24 +179,24 @@ case("notifies only when a session newly enters waiting", function()
   })
   ring.setup({ interval = 0 })
   wait_idle()
-  assert(#notifications == 1, vim.inspect(notifications))
+  assert(#notifications == 0, "the initial snapshot must only prime the baseline")
+
+  ring.refresh()
+  wait_idle()
+  assert(#notifications == 0, "an unchanged waiting session notified")
+
+  ring.refresh()
+  wait_idle()
+  assert(#notifications == 1, "a replacement session was not detected")
   assert(notifications[1].message == "An agent session is waiting for you")
   assert(notifications[1].level == vim.log.levels.WARN)
   assert(notifications[1].opts.title == "RiNG")
 
   ring.refresh()
   wait_idle()
-  assert(#notifications == 1, "an unchanged waiting session notified again")
-
   ring.refresh()
   wait_idle()
-  assert(#notifications == 2, "a replacement session was not detected")
-
-  ring.refresh()
-  wait_idle()
-  ring.refresh()
-  wait_idle()
-  assert(#notifications == 3, "a session re-entering waiting was not detected")
+  assert(#notifications == 2, "a session re-entering waiting was not detected")
 end)
 
 case("notifications can be configured and toggled at runtime", function()
@@ -354,12 +354,14 @@ case("a failing on_change never breaks the poll loop", function()
 end)
 
 case("notifications honour a custom level and title", function()
-  stub_system({ counts(1) })
+  stub_system({ counts(0), counts(1) })
   ring.setup({
     interval = 0,
     notify_level = vim.log.levels.INFO,
     notify_title = "Agent desk",
   })
+  wait_idle()
+  ring.refresh()
   wait_idle()
   assert(#notifications == 1, vim.inspect(notifications))
   assert(notifications[1].level == vim.log.levels.INFO)

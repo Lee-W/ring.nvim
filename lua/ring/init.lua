@@ -79,6 +79,13 @@ local function get_waiting_session_ids(data, waiting)
 end
 
 local function count_new_waiting(waiting, session_ids)
+  -- The first successful poll describes the state Neovim opened into. Prime
+  -- the baseline silently so existing waits are not mistaken for transitions.
+  if state.updated_at == nil then
+    waiting_session_ids = session_ids
+    return 0
+  end
+
   local new_waiting = math.max(waiting - state.waiting, 0)
   if session_ids and waiting_session_ids then
     new_waiting = 0
