@@ -110,11 +110,14 @@ hide_when_zero ~
 
                                                              *ring-notify*
 notify ~
-        When `true` (the default), call |vim.notify()| when a session newly
-        enters the waiting state. Session IDs prevent repeated notifications
-        and detect replacement sessions even when the total count is unchanged.
-        Counts-only custom commands fall back to detecting a rising count. Use
-        |:RingNotifyToggle| to change this at runtime without reconfiguring.
+        When `true` (the default), call |vim.notify()| when a session newly enters
+        the waiting state after the first successful poll. That initial poll
+        silently establishes a baseline, so opening Neovim does not announce
+        sessions that were already waiting. Session IDs prevent repeated
+        notifications and detect replacement sessions even when the total count
+        is unchanged. Counts-only custom commands fall back to detecting a rising
+        count. Use |:RingNotifyToggle| to change this at runtime without
+        reconfiguring.
 
 notify_level ~
         Level passed to |vim.notify()|. Defaults to `vim.log.levels.WARN`.
