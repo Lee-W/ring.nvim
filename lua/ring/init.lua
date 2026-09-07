@@ -54,31 +54,42 @@ local function run_on_change(waiting, previous)
   end
 end
 
-local function get_waiting_session_ids(data, waiting)
+local function get_waiting_sessions(data, waiting)
   if type(data.sessions) ~= "table" then
     return nil
   end
 
   local ids = {}
-  local count = 0
+  local sessions = {}
   for _, session in ipairs(data.sessions) do
     if type(session) == "table" and session.status == "waiting" then
-      if type(session.session_id) ~= "string" or session.session_id == "" then
+      if
+        type(session.session_id) ~= "string"
+        or session.session_id == ""
+        or ids[session.session_id]
+      then
         return nil
       end
       ids[session.session_id] = true
-      count = count + 1
+      sessions[#sessions + 1] = session
     end
   end
 
   -- A partial or non-standard session list is not reliable enough for diffing.
-  if count ~= waiting then
+  if #sessions ~= waiting then
     return nil
   end
-  return ids
+  return sessions
 end
 
-local function count_new_waiting(waiting, session_ids)
+local function count_new_waiting(waiting, sessions)
+  local session_ids
+  if sessions then
+    session_ids = {}
+    for _, session in ipairs(sessions) do
+      session_ids[session.session_id] = true
+    end
+  end
   -- The first successful poll describes the state Neovim opened into. Prime
   -- the baseline silently so existing waits are not mistaken for transitions.
   if state.updated_at == nil then
@@ -87,34 +98,34 @@ local function count_new_waiting(waiting, session_ids)
   end
 
   local new_waiting = math.max(waiting - state.waiting, 0)
+  local new_sessions
   if session_ids and waiting_session_ids then
-    new_waiting = 0
-    for session_id in pairs(session_ids) do
-      if not waiting_session_ids[session_id] then
-        new_waiting = new_waiting + 1
+    new_sessions = {}
+    for _, session in ipairs(sessions) do
+      if not waiting_session_ids[session.session_id] then
+        new_sessions[#new_sessions + 1] = session
       end
     end
+    new_waiting = #new_sessions
+  elseif sessions and state.waiting == 0 then
+    -- A zero baseline proves every current wait is new, even without old IDs.
+    new_sessions = sessions
   end
   waiting_session_ids = session_ids
-  return new_waiting
+  return new_waiting, new_sessions
 end
 
-local function notify_waiting(count)
+local function notify_waiting(count, sessions)
   if not state.notify_enabled or count == 0 then
     return
   end
 
-  local message
-  if count == 1 then
-    message = "An agent session is waiting for you"
-  else
-    message = ("%d agent sessions are waiting for you"):format(count)
-  end
+  local message = require("ring.notification").format(count, sessions)
   -- A notification provider should never be able to break polling.
   pcall(vim.notify, message, config.notify_level, { title = config.notify_title })
 end
 
-local function finish(current_generation, waiting, err, session_ids)
+local function finish(current_generation, waiting, err, sessions)
   if current_generation ~= generation then
     return
   end
@@ -124,10 +135,10 @@ local function finish(current_generation, waiting, err, session_ids)
   local changed = state.last_error ~= err or (waiting ~= nil and state.waiting ~= waiting)
   state.last_error = err
   if waiting ~= nil then
-    local new_waiting = count_new_waiting(waiting, session_ids)
+    local new_waiting, new_sessions = count_new_waiting(waiting, sessions)
     state.waiting = waiting
     state.updated_at = os.time()
-    notify_waiting(new_waiting)
+    notify_waiting(new_waiting, new_sessions)
   end
   if changed then
     redraw()
@@ -159,7 +170,7 @@ local function apply_result(result, current_generation)
     return finish(current_generation, nil, "ring returned invalid JSON")
   end
 
-  finish(current_generation, waiting, nil, get_waiting_session_ids(data, waiting))
+  finish(current_generation, waiting, nil, get_waiting_sessions(data, waiting))
 end
 
 local function teardown()

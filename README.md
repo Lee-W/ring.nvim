@@ -95,6 +95,24 @@ opts = {
 }
 ```
 
+Notifications include the project (and your RiNG label, if set), provider, short session ID, and
+what needs attention. For example:
+
+```text
+An agent session is waiting for you
+• Fix waiting state (ring) · Claude Code [a1b2c3d4]
+  Permission required: Bash: git push
+```
+
+The requested action uses `waiting_detail`, falling back to `last_action` for older snapshots.
+When several sessions newly need attention, one notification lists up to three of them in snapshot
+order, followed by the number of additional sessions. Project summaries and details are shortened
+to keep the notification readable; the statusline remains a compact count.
+
+Custom commands without a complete, unique session list retain the count-only message. RiNG.nvim
+only names newly waiting sessions when it can identify them reliably; it will not guess which
+session is new after a nonzero counts-only snapshot.
+
 Polling runs through `vim.system()` and never blocks statusline rendering. Failed refreshes keep the
 last successful count. By default a failure is invisible in the statusline — set `error_icon` (e.g.
 `"⚠"`) if you would rather see it. Use `:RingRefresh` to refresh immediately, `:checkhealth ring`
