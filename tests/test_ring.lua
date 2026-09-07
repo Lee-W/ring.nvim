@@ -188,7 +188,10 @@ case("notifies only when a session newly enters waiting", function()
   ring.refresh()
   wait_idle()
   assert(#notifications == 1, "a replacement session was not detected")
-  assert(notifications[1].message == "An agent session is waiting for you")
+  assert(
+    notifications[1].message
+      == "An agent session is waiting for you\n• Agent [b]\n  Waiting for input"
+  )
   assert(notifications[1].level == vim.log.levels.WARN)
   assert(notifications[1].opts.title == "RiNG")
 
@@ -226,9 +229,230 @@ case("notifications can be configured and toggled at runtime", function()
   ring.refresh()
   wait_idle()
   assert(#notifications == 1, "new waits should notify after enabling")
-  assert(notifications[1].message == "An agent session is waiting for you")
+  assert(
+    notifications[1].message
+      == "An agent session is waiting for you\n• Agent [c]\n  Waiting for input"
+  )
   assert(ring.set_notify(false) == false)
   assert(ring.get_state().notify_enabled == false)
+end)
+
+case("notifications identify the project, agent, and requested action", function()
+  stub_system({
+    counts(0),
+    snapshot(1, {
+      {
+        session_id = "claude-session-123",
+        provider = "claude-code",
+        project = "ring",
+        label = "修正等待狀態",
+        status = "waiting",
+        waiting_kind = "permission",
+        waiting_detail = "Bash: git push",
+        last_action = "an older tool",
+      },
+    }),
+  })
+  ring.setup({ interval = 0 })
+  wait_idle()
+  ring.refresh()
+  wait_idle()
+  assert(notifications[1].message == table.concat({
+    "An agent session is waiting for you",
+    "• 修正等待狀態 (ring) · Claude Code [claude-s]",
+    "  Permission required: Bash: git push",
+  }, "\n"), notifications[1].message)
+  assert(ring.status() == "🔴1", "statusline must remain compact")
+end)
+
+for _, fixture in ipairs({
+  {
+    name = "question and last action fallback",
+    session = {
+      provider = "codex",
+      project = "ring",
+      waiting_kind = "question",
+      last_action = "Which branch?",
+    },
+    lines = { "• ring · Codex [abcdefgh]", "  Question needs an answer: Which branch?" },
+  },
+  {
+    name = "cwd fallback and plan approval",
+    session = { provider = "claude-code", cwd = "/work/my-project/", waiting_kind = "plan" },
+    lines = { "• my-project · Claude Code [abcdefgh]", "  Plan approval required" },
+  },
+  {
+    name = "legacy sessions with only an ID",
+    session = {},
+    lines = { "• Agent [abcdefgh]", "  Waiting for input" },
+  },
+  {
+    name = "unknown providers and optional field types",
+    session = {
+      provider = "my-agent",
+      project = false,
+      label = {},
+      waiting_detail = vim.NIL,
+      last_action = "—",
+    },
+    lines = { "• my-agent [abcdefgh]", "  Waiting for input" },
+  },
+}) do
+  case("notification supports " .. fixture.name, function()
+    local session = vim.tbl_extend(
+      "force",
+      { session_id = "codex:abcdefgh-123", status = "waiting" },
+      fixture.session
+    )
+    stub_system({ snapshot(0, {}), snapshot(1, { session }) })
+    ring.setup({ interval = 0 })
+    wait_idle()
+    ring.refresh()
+    wait_idle()
+    assert(
+      notifications[1].message
+        == "An agent session is waiting for you\n" .. table.concat(fixture.lines, "\n"),
+      notifications[1].message
+    )
+  end)
+end
+
+case("notification details include only newly waiting sessions in snapshot order", function()
+  local old = { session_id = "old", project = "old-project", status = "waiting" }
+  local new_b = { session_id = "b", provider = "codex", project = "second", status = "waiting" }
+  local new_a =
+    { session_id = "a", provider = "claude-code", project = "first", status = "waiting" }
+  stub_system({ snapshot(1, { old }), snapshot(3, { old, new_b, new_a }) })
+  ring.setup({ interval = 0 })
+  wait_idle()
+  ring.refresh()
+  wait_idle()
+  assert(#notifications == 1)
+  assert(notifications[1].message == table.concat({
+    "2 agent sessions are waiting for you",
+    "• second · Codex [b]",
+    "  Waiting for input",
+    "• first · Claude Code [a]",
+    "  Waiting for input",
+  }, "\n"), notifications[1].message)
+end)
+
+for _, count in ipairs({ 3, 4 }) do
+  case("notification bounds a batch of " .. count .. " new waits", function()
+    local sessions = {}
+    for i = 1, count do
+      sessions[i] = { session_id = tostring(i), project = "project-" .. i, status = "waiting" }
+    end
+    stub_system({ snapshot(0, {}), snapshot(count, sessions) })
+    ring.setup({ interval = 0 })
+    wait_idle()
+    ring.refresh()
+    wait_idle()
+    local message = notifications[1].message
+    assert(#notifications == 1)
+    assert(message:find("project-3", 1, true), message)
+    assert(not message:find("project-4", 1, true), message)
+    assert((message:find("… and 1 more", 1, true) ~= nil) == (count == 4), message)
+  end)
+end
+
+case("notification text is bounded and keeps UTF-8 characters intact", function()
+  stub_system({
+    counts(0),
+    snapshot(1, {
+      {
+        session_id = "a",
+        project = string.rep("專案", 90),
+        status = "waiting",
+        waiting_kind = "question",
+        waiting_detail = "第一行\n第二行\t" .. string.rep("請確認", 100),
+      },
+    }),
+  })
+  ring.setup({ interval = 0 })
+  wait_idle()
+  ring.refresh()
+  wait_idle()
+  local lines = vim.split(notifications[1].message, "\n", { plain = true })
+  assert(#lines == 3, vim.inspect(lines))
+  assert(vim.fn.strchars(lines[2]) <= 120, lines[2])
+  assert(vim.fn.strchars(lines[3]) <= 160, lines[3])
+  assert(lines[2]:find("…", 1, true) and lines[2]:find("Agent [a]", 1, true), lines[2])
+  assert(lines[3]:sub(-#"…") == "…", lines[3])
+  assert(lines[3]:find("第一行 第二行", 1, true), lines[3])
+  assert(vim.str_utfindex(lines[3]) == vim.fn.strchars(lines[3]), "invalid UTF-8")
+end)
+
+for _, fixture in ipairs({
+  { name = "counts only", sessions = nil },
+  { name = "partial sessions", sessions = { { session_id = "old", status = "waiting" } } },
+  {
+    name = "duplicate IDs",
+    sessions = {
+      { session_id = "same", status = "waiting" },
+      { session_id = "same", status = "waiting" },
+    },
+  },
+  {
+    name = "missing IDs",
+    sessions = { { status = "waiting" }, { session_id = "new", status = "waiting" } },
+  },
+}) do
+  case("notification falls back to counts with " .. fixture.name, function()
+    stub_system({
+      snapshot(1, { { session_id = "old", status = "waiting" } }),
+      snapshot(2, fixture.sessions),
+    })
+    ring.setup({ interval = 0 })
+    wait_idle()
+    ring.refresh()
+    wait_idle()
+    assert(#notifications == 1)
+    assert(
+      notifications[1].message == "An agent session is waiting for you",
+      notifications[1].message
+    )
+  end)
+end
+
+case("new session details do not guess identities after a counts-only baseline", function()
+  stub_system({
+    counts(1),
+    snapshot(2, {
+      { session_id = "a", project = "one", status = "waiting" },
+      { session_id = "b", project = "two", status = "waiting" },
+    }),
+  })
+  ring.setup({ interval = 0 })
+  wait_idle()
+  ring.refresh()
+  wait_idle()
+  assert(
+    notifications[1].message == "An agent session is waiting for you",
+    notifications[1].message
+  )
+end)
+
+case("changed details and failed polls do not replay waiting notifications", function()
+  local session =
+    { session_id = "a", project = "ring", status = "waiting", waiting_detail = "First question?" }
+  local changed = vim.tbl_extend("force", session, { waiting_detail = "Updated question?" })
+  stub_system({
+    snapshot(0, {}),
+    snapshot(1, { session }),
+    { code = 1, stderr = "boom" },
+    snapshot(1, { changed }),
+  })
+  ring.setup({ interval = 0 })
+  wait_idle()
+  ring.refresh()
+  wait_idle()
+  ring.refresh()
+  wait_error("boom")
+  ring.refresh()
+  wait_idle()
+  assert(#notifications == 1, "unchanged waiting identity notified again")
+  assert(notifications[1].message:find("First question?", 1, true), notifications[1].message)
 end)
 
 case("polls repeatedly on a positive interval", function()

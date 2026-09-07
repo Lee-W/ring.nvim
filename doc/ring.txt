@@ -119,6 +119,21 @@ notify ~
         count. Use |:RingNotifyToggle| to change this at runtime without
         reconfiguring.
 
+        Notifications show the project and optional RiNG label, provider,
+        short session ID, waiting reason, and requested action. The action
+        uses `waiting_detail`, falling back to `last_action` when absent.
+        Missing project names fall back to the directory name. Optional
+        fields may be absent in older or custom JSON snapshots.
+
+        A notification lists at most three newly waiting sessions, in snapshot
+        order, plus the number of additional sessions. Summary lines are capped
+        at 120 characters and detail lines at 160, without splitting UTF-8
+        characters. The statusline still shows only the count.
+
+        Incomplete or duplicate session lists use the count-only message.
+        After a nonzero counts-only snapshot, a rise also stays count-only
+        because the plugin cannot know which session is new.
+
 notify_level ~
         Level passed to |vim.notify()|. Defaults to `vim.log.levels.WARN`.
         Only consulted when notifications are on.
