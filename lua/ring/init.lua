@@ -23,7 +23,7 @@ local timer
 local started = false
 local shutdown = false
 local generation = 0
-local waiting_session_ids
+local waiting_sessions
 local jump_pending = false
 local jump_active = false
 local state = {
@@ -86,28 +86,64 @@ local function get_waiting_sessions(data, waiting)
   return sessions
 end
 
+local function request_ids(session)
+  local requests = session.waiting_requests
+  if type(requests) ~= "table" or not vim.islist(requests) or #requests == 0 then
+    return nil
+  end
+  local ids = {}
+  for _, request in ipairs(requests) do
+    if
+      type(request) ~= "table"
+      or type(request.id) ~= "string"
+      or request.id == ""
+      or ids[request.id]
+    then
+      return nil
+    end
+    ids[request.id] = true
+  end
+  return ids
+end
+
 local function count_new_waiting(waiting, sessions)
-  local session_ids
+  local current
   if sessions then
-    session_ids = {}
+    current = {}
     for _, session in ipairs(sessions) do
-      session_ids[session.session_id] = true
+      current[session.session_id] = request_ids(session) or true
     end
   end
   -- The first successful poll describes the state Neovim opened into. Prime
   -- the baseline silently so existing waits are not mistaken for transitions.
   if state.updated_at == nil then
-    waiting_session_ids = session_ids
+    waiting_sessions = current
     return 0
   end
 
   local new_waiting = math.max(waiting - state.waiting, 0)
   local new_sessions
-  if session_ids and waiting_session_ids then
+  if current and waiting_sessions then
     new_sessions = {}
     for _, session in ipairs(sessions) do
-      if not waiting_session_ids[session.session_id] then
+      local previous = waiting_sessions[session.session_id]
+      local requests = current[session.session_id]
+      if not previous then
         new_sessions[#new_sessions + 1] = session
+      elseif type(previous) == "table" and type(requests) == "table" then
+        -- Compare additions, not a hash of the whole set: removing a resolved
+        -- subagent wait must not re-announce the remaining waits.
+        for _, request in ipairs(session.waiting_requests) do
+          if not previous[request.id] then
+            local new_session = vim.deepcopy(session)
+            new_session.waiting_kind = request.kind
+            new_session.waiting_detail = request.detail
+            new_session.last_action = nil
+            new_session.waiting_owner = request.owner
+            new_sessions[#new_sessions + 1] = new_session
+            break -- Counts and notification headlines still count sessions.
+          end
+        end
       end
     end
     new_waiting = #new_sessions
@@ -115,7 +151,7 @@ local function count_new_waiting(waiting, sessions)
     -- A zero baseline proves every current wait is new, even without old IDs.
     new_sessions = sessions
   end
-  waiting_session_ids = session_ids
+  waiting_sessions = current
   return new_waiting, new_sessions
 end
 
@@ -348,7 +384,7 @@ function M.setup(opts)
   state.last_error = nil
   state.updated_at = nil
   state.notify_enabled = config.notify
-  waiting_session_ids = nil
+  waiting_sessions = nil
   M.start()
 end
 

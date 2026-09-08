@@ -109,8 +109,15 @@ vim.cmd.RingNotifyToggle()
 The first successful poll silently establishes a baseline, so opening Neovim does not announce
 sessions that were already waiting. After that, each session notifies once when it enters the
 waiting state. Session IDs prevent repeated alerts and detect a replacement even when the total
-count stays unchanged; counts-only custom commands fall back to notifying on a rise. For other count
-changes, `on_change(waiting, previous)` fires on every movement in either direction and leaves the
+count stays unchanged; counts-only custom commands fall back to notifying on a rise.
+
+When RiNG supplies `waiting_requests`, new request IDs also trigger a notification within the same
+session—even if the old wait was resolved and replaced between polls. Background activity, repeated
+reminders, request reordering, and resolved requests do not replay alerts. Missing or malformed
+request IDs fall back to session tracking and silently establish a new request baseline when valid
+IDs return. The first poll and re-enabling notifications never replay existing requests.
+
+For other count changes, `on_change(waiting, previous)` fires on every movement in either direction and leaves the
 presentation to you:
 
 ```lua
@@ -136,6 +143,11 @@ The requested action uses `waiting_detail`, falling back to `last_action` for ol
 When several sessions newly need attention, one notification lists up to three of them in snapshot
 order, followed by the number of additional sessions. Project summaries and details are shortened
 to keep the notification readable; the statusline remains a compact count.
+
+If a session already had a wait, its notification describes the first newly added request in
+snapshot order, including the subagent ID when available, rather than the older foreground request.
+Multiple new requests in one session still count as one session. Without a provider request ID or
+an intervening progress event, identical prompts cannot reliably identify a new waiting round.
 
 Custom commands without a complete, unique session list retain the count-only message. RiNG.nvim
 only names newly waiting sessions when it can identify them reliably; it will not guess which

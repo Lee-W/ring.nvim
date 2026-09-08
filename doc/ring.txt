@@ -134,11 +134,24 @@ notify ~
         count. Use |:RingNotifyToggle| to change this at runtime without
         reconfiguring.
 
+        When RiNG supplies `waiting_requests`, newly added request IDs also
+        notify within the same session, even if the working state occurred
+        between polls. Repeated reminders, background activity, reordering,
+        and resolved requests stay silent. Missing or malformed request IDs
+        fall back to session-ID tracking; valid IDs returning establish a
+        silent baseline. Enabling notifications does not replay requests.
+
         Notifications show the project and optional RiNG label, provider,
         short session ID, waiting reason, and requested action. The action
         uses `waiting_detail`, falling back to `last_action` when absent.
         Missing project names fall back to the directory name. Optional
         fields may be absent in older or custom JSON snapshots.
+
+        For a session that was already waiting, the notification describes
+        the first newly added request in snapshot order, including its
+        subagent ID when available. Multiple new requests in one session
+        still count once. Identical prompts without provider request IDs or
+        intervening progress cannot reliably identify a new waiting round.
 
         A notification lists at most three newly waiting sessions, in snapshot
         order, plus the number of additional sessions. Summary lines are capped

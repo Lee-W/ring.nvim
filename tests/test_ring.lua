@@ -204,6 +204,172 @@ case("notifies only when a session newly enters waiting", function()
   assert(#notifications == 2, "a session re-entering waiting was not detected")
 end)
 
+local function request_snapshot(requests, extra)
+  local session = vim.tbl_extend("force", {
+    session_id = "same-session",
+    status = "waiting",
+    project = "ring",
+    waiting_kind = "permission",
+    waiting_detail = "existing foreground request",
+    waiting_requests = requests,
+  }, extra or {})
+  return snapshot(1, { session })
+end
+
+case("new requests in the same session notify without an observed working snapshot", function()
+  local first = { id = "round-1", kind = "question", detail = "Continue?" }
+  local second = { id = "round-2", kind = "question", detail = "Continue?" }
+  local changes = 0
+  stub_system({
+    request_snapshot({ first }),
+    request_snapshot({ second }),
+    request_snapshot({ second }),
+  })
+  ring.setup({
+    interval = 0,
+    on_change = function()
+      changes = changes + 1
+    end,
+  })
+  wait_idle()
+  assert(#notifications == 0, "initial requests must be a silent baseline")
+  ring.refresh()
+  wait_idle()
+  assert(#notifications == 1, "the new round was missed")
+  assert(notifications[1].message:find("Question needs an answer: Continue?", 1, true))
+  assert(not notifications[1].message:find("existing foreground request", 1, true))
+  assert(ring.status() == "🔴1")
+  assert(changes == 1, "on_change must remain count-only")
+  ring.refresh()
+  wait_idle()
+  assert(#notifications == 1, "the same request was replayed")
+end)
+
+case("adding a background wait describes that request and removing waits stays quiet", function()
+  local foreground = { id = "fg", owner = "foreground", kind = "permission", detail = "git push" }
+  local background =
+    { id = "bg", owner = "agent:worker-b", kind = "question", detail = "Which file?" }
+  stub_system({
+    request_snapshot({ foreground }),
+    request_snapshot({ foreground, background }),
+    request_snapshot({ background, foreground }),
+    request_snapshot({ background }),
+  })
+  ring.setup({ interval = 0 })
+  wait_idle()
+  ring.refresh()
+  wait_idle()
+  assert(#notifications == 1)
+  assert(
+    notifications[1].message:find(
+      "Agent worker-b · Question needs an answer: Which file?",
+      1,
+      true
+    )
+  )
+  assert(not notifications[1].message:find("git push", 1, true))
+  ring.refresh()
+  wait_idle()
+  ring.refresh()
+  wait_idle()
+  assert(#notifications == 1, "reordering or removal must not notify")
+end)
+
+case("activity, metadata and request detail updates do not replay stable requests", function()
+  stub_system({
+    request_snapshot({ { id = "same", kind = "question", detail = "First wording" } }),
+    request_snapshot({ { id = "same", kind = "question", detail = "Better wording" } }, {
+      last_active = 200,
+      heartbeat_at = 200,
+      label = "New label",
+      last_action = "background Read",
+    }),
+  })
+  ring.setup({ interval = 0 })
+  wait_idle()
+  ring.refresh()
+  wait_idle()
+  assert(#notifications == 0)
+end)
+
+for _, malformed in ipairs({
+  vim.NIL,
+  false,
+  {},
+  { id = "not a list" },
+  { {} },
+  { { id = 1 } },
+  { { id = "" } },
+  { { id = "duplicate" }, { id = "duplicate" } },
+}) do
+  case(
+    "missing or malformed request identities silently rebaseline: " .. vim.inspect(malformed),
+    function()
+      stub_system({
+        request_snapshot({ { id = "old" } }),
+        request_snapshot(malformed),
+        request_snapshot({ { id = "new" } }),
+        request_snapshot({ { id = "next" } }),
+      })
+      ring.setup({ interval = 0 })
+      wait_idle()
+      ring.refresh()
+      wait_idle()
+      ring.refresh()
+      wait_idle()
+      assert(#notifications == 0, "changing schema must not replay old waits")
+      ring.refresh()
+      wait_idle()
+      assert(#notifications == 1)
+    end
+  )
+end
+
+case(
+  "failed polls preserve request identities and notification toggles do not replay them",
+  function()
+    stub_system({
+      request_snapshot({ { id = "first" } }),
+      { code = 1, stderr = "boom" },
+      request_snapshot({ { id = "second" } }),
+      request_snapshot({ { id = "third" } }),
+      request_snapshot({ { id = "third" } }),
+      request_snapshot({ { id = "fourth" } }),
+    })
+    ring.setup({ interval = 0 })
+    wait_idle()
+    ring.refresh()
+    wait_error("boom")
+    ring.refresh()
+    wait_idle()
+    assert(#notifications == 1)
+    ring.set_notify(false)
+    ring.refresh()
+    wait_idle()
+    ring.set_notify(true)
+    ring.refresh()
+    wait_idle()
+    assert(#notifications == 1)
+    ring.refresh()
+    wait_idle()
+    assert(#notifications == 2)
+  end
+)
+
+case("multiple new requests in one session still notify and count once", function()
+  stub_system({
+    request_snapshot({ { id = "first" } }),
+    request_snapshot({ { id = "second", kind = "plan" }, { id = "third", kind = "question" } }),
+  })
+  ring.setup({ interval = 0 })
+  wait_idle()
+  ring.refresh()
+  wait_idle()
+  assert(#notifications == 1)
+  assert(notifications[1].message:find("An agent session is waiting for you", 1, true))
+  assert(ring.get_state().waiting == 1)
+end)
+
 case("notifications can be configured and toggled at runtime", function()
   local session_a = { session_id = "a", status = "waiting" }
   local session_b = { session_id = "b", status = "waiting" }

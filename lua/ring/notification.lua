@@ -68,6 +68,10 @@ end
 
 local function session_detail(session)
   local reason = waiting_reasons[clean_text(session.waiting_kind)] or "Waiting for input"
+  local owner = clean_text(session.waiting_owner)
+  if owner and owner:match("^agent:") then
+    reason = "Agent " .. shorten(owner:sub(7), SESSION_ID_CHARS) .. " · " .. reason
+  end
   local detail = clean_text(session.waiting_detail) or clean_text(session.last_action)
   return shorten("  " .. reason .. (detail and (": " .. detail) or ""), MAX_DETAIL_CHARS)
 end
