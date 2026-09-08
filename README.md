@@ -51,8 +51,10 @@ These are the defaults:
 ```lua
 require("ring").setup({
   command = { "ring", "--format", "json" },
+  focus_command = { "ring", "focus" }, -- full session ID is appended as one argument
   interval = 2000, -- milliseconds; 0 disables periodic polling
   timeout = 5000,
+  focus_timeout = 15000,
   icon = "🔴",
   error_icon = nil, -- shown instead of the count while the last refresh failed
   hide_when_zero = true,
@@ -64,6 +66,32 @@ require("ring").setup({
 ```
 
 `command` replaces the default argv entirely, so keep `--format json` if you point it elsewhere.
+`focus_command` is a separate argv prefix: set it as well if you use a custom RiNG executable or
+wrapper. It is invoked without a shell, with the selected session's full ID appended.
+`:checkhealth ring` checks the executables configured for both queries and focus.
+
+## Jump to a waiting session
+
+Run `:RingJump` to fetch a fresh snapshot and choose a waiting session with `vim.ui.select()`.
+The picker shows the project/label, provider, short ID, and waiting reason, using the same text as
+notifications. Unlike notifications, the picker lists every waiting session, not just new ones or
+the first three. It works with Neovim's built-in selector and plugins that override `vim.ui.select`.
+
+An optional mapping (no keys are mapped by default):
+
+```lua
+vim.keymap.set("n", "<leader>rj", "<cmd>RingJump<cr>", { desc = "Jump to waiting agent" })
+```
+
+Selecting an entry asynchronously runs `ring focus FULL_SESSION_ID`; cancelling does nothing,
+even when there is only one entry. RiNG's existing focus behavior applies: if its TUI is running,
+it returns to the TUI and selects that session; otherwise it focuses the session's terminal.
+The terminal must support RiNG's focus mechanism and the session must still be reachable.
+
+If a poll is already in flight, the picker waits for that result instead of starting another.
+Missing session details, query/focus failures, and timeouts are reported even when automatic
+waiting notifications are disabled. A failed query never falls back to an old cached session list.
+Repeated `:RingJump` calls while fetching, choosing, or focusing do not launch duplicate actions.
 
 ## Notifications
 

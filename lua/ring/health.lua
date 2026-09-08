@@ -9,11 +9,14 @@ function M.check()
   end
 
   local ring = require("ring")
-  local executable = ring.get_config().command[1]
-  if vim.fn.executable(executable) == 1 then
-    vim.health.ok(("%s executable found"):format(executable))
-  else
-    vim.health.error(("%s executable not found in PATH"):format(executable))
+  local config = ring.get_config()
+  for _, name in ipairs({ "command", "focus_command" }) do
+    local executable = config[name][1]
+    if vim.fn.executable(executable) == 1 then
+      vim.health.ok(("%s: %s executable found"):format(name, executable))
+    else
+      vim.health.error(("%s: %s executable not found in PATH"):format(name, executable))
+    end
   end
 
   local state = ring.get_state()

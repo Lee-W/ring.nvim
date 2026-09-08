@@ -6,10 +6,12 @@ local ring = require("ring")
 local real_system = vim.system
 local real_health = vim.health
 local real_notify = vim.notify
+local real_select = vim.ui.select
 
 local cases = {}
 local calls
 local notifications
+local selections
 
 local function case(name, fn)
   cases[#cases + 1] = { name = name, fn = fn }
@@ -625,35 +627,489 @@ case("a synchronous spawn failure never escapes setup()", function()
   assert(ring.status() == "", ring.status())
 end)
 
-case("checkhealth inspects the configured executable, not a hardcoded one", function()
-  stub_system({})
-  ring.setup({ interval = 0, command = { "ring-definitely-not-installed", "--format", "json" } })
-  wait_idle()
+for _, command_name in ipairs({ "command", "focus_command" }) do
+  case("checkhealth inspects the configured " .. command_name .. " executable", function()
+    stub_system({})
+    local opts = { interval = 0, command = { "nvim" }, focus_command = { "nvim" } }
+    opts[command_name] = { "ring-definitely-not-installed" }
+    ring.setup(opts)
+    wait_idle()
 
-  local reported = {}
-  vim.health = {
-    start = function(name)
-      reported[#reported + 1] = { level = "start", message = name }
-    end,
-    ok = function(message)
-      reported[#reported + 1] = { level = "ok", message = message }
-    end,
-    warn = function(message)
-      reported[#reported + 1] = { level = "warn", message = message }
-    end,
-    error = function(message)
-      reported[#reported + 1] = { level = "error", message = message }
-    end,
-  }
-  require("ring.health").check()
+    local reported = {}
+    vim.health = {
+      start = function(name)
+        reported[#reported + 1] = { level = "start", message = name }
+      end,
+      ok = function(message)
+        reported[#reported + 1] = { level = "ok", message = message }
+      end,
+      warn = function(message)
+        reported[#reported + 1] = { level = "warn", message = message }
+      end,
+      error = function(message)
+        reported[#reported + 1] = { level = "error", message = message }
+      end,
+    }
+    require("ring.health").check()
 
-  local found = false
-  for _, entry in ipairs(reported) do
-    if entry.level == "error" and entry.message:find("ring-definitely-not-installed", 1, true) then
-      found = true
+    local found = false
+    for _, entry in ipairs(reported) do
+      if
+        entry.level == "error" and entry.message:find("ring-definitely-not-installed", 1, true)
+      then
+        found = true
+      end
     end
+    assert(found, "checkhealth did not report the configured executable: " .. vim.inspect(reported))
+  end)
+end
+
+local jump_session = {
+  session_id = "codex:12345678-full-session-id",
+  provider = "codex",
+  project = "ring",
+  label = "Fix waiting state",
+  status = "waiting",
+  waiting_kind = "permission",
+  waiting_detail = "Bash: git push",
+}
+
+case(":RingJump refreshes, selects a waiting session, and focuses its full ID", function()
+  local working = { session_id = "working", project = "busy", status = "working" }
+  stub_system({ counts(0), snapshot(1, { working, jump_session }), { code = 0 } })
+  ring.setup({ interval = 0, notify = false })
+  wait_idle()
+  dofile(root .. "/plugin/ring.lua")
+  vim.cmd("RingJump")
+  wait_for(function()
+    return #selections == 1
+  end, "jump picker never opened")
+  assert(#calls == 2, "jump should first fetch a fresh snapshot")
+  assert(vim.deep_equal(selections[1].items, { jump_session }), vim.inspect(selections[1].items))
+  assert(
+    selections[1].opts.format_item(jump_session)
+      == "• Fix waiting state (ring) · Codex [12345678] — Permission required: Bash: git push"
+  )
+  selections[1].callback(selections[1].items[1])
+  assert(
+    vim.deep_equal(calls[3].command, { "ring", "focus", jump_session.session_id }),
+    vim.inspect(calls)
+  )
+  assert(calls[3].options.text == true)
+  assert(calls[3].options.timeout == 15000)
+  vim.wait(20)
+  assert(#notifications == 0, "a successful request should not claim more than the CLI confirms")
+end)
+
+case("jump cancellation is a no-op and another jump can open the picker", function()
+  stub_system({ counts(0), snapshot(1, { jump_session }), snapshot(1, { jump_session }) })
+  ring.setup({ interval = 0, notify = false })
+  wait_idle()
+  ring.jump()
+  wait_for(function()
+    return #selections == 1
+  end, "jump picker never opened")
+  selections[1].callback(nil)
+  assert(#calls == 2)
+  ring.jump()
+  wait_for(function()
+    return #selections == 2
+  end, "cancelled jump remained busy")
+  selections[2].callback(nil)
+  assert(#calls == 3)
+end)
+
+case("jump lists all waiting sessions beyond the notification limit", function()
+  local sessions = {}
+  for i = 1, 4 do
+    sessions[i] = vim.tbl_extend("force", jump_session, { session_id = "session-" .. i })
   end
-  assert(found, "checkhealth did not report the configured executable: " .. vim.inspect(reported))
+  stub_system({ counts(0), snapshot(4, sessions), { code = 0 } })
+  ring.setup({ interval = 0, notify = false })
+  wait_idle()
+  ring.jump()
+  wait_for(function()
+    return #selections == 1
+  end, "jump picker never opened")
+  assert(vim.deep_equal(selections[1].items, sessions), vim.inspect(selections[1].items))
+  selections[1].callback(selections[1].items[4])
+  assert(vim.deep_equal(calls[3].command, { "ring", "focus", "session-4" }))
+end)
+
+for _, action in ipairs({ "stop", "setup" }) do
+  case("on_change " .. action .. " invalidates the requested jump", function()
+    stub_system({ counts(0), snapshot(1, { jump_session }), counts(0) })
+    ring.setup({
+      interval = 0,
+      notify = false,
+      on_change = function()
+        if action == "stop" then
+          ring.stop()
+        else
+          ring.setup({ interval = 0, notify = false })
+        end
+      end,
+    })
+    wait_idle()
+    ring.jump()
+    wait_idle()
+    assert(#selections == 0, "reconfigured query opened an obsolete picker")
+  end)
+end
+
+case("jump waits for an in-flight poll and ignores repeated invocations", function()
+  local callbacks = {}
+  calls = {}
+  vim.system = function(command, options, callback)
+    calls[#calls + 1] = { command = command, options = options }
+    callbacks[#callbacks + 1] = callback
+    return {}
+  end
+  ring.setup({ interval = 0, notify = false })
+  ring.jump()
+  ring.jump()
+  assert(#calls == 1, "in-flight refresh was duplicated")
+  callbacks[1](snapshot(1, { jump_session }))
+  wait_for(function()
+    return #selections == 1
+  end, "in-flight poll did not supply the picker")
+  ring.jump()
+  assert(#calls == 1, "an open picker was duplicated")
+  selections[1].callback(jump_session)
+  assert(#calls == 2)
+  ring.jump()
+  assert(#calls == 2, "an in-flight focus was duplicated")
+  callbacks[2]({ code = 0 })
+  vim.wait(20)
+  ring.jump()
+  assert(#calls == 3, "completed focus remained busy")
+end)
+
+for _, fixture in ipairs({
+  {
+    name = "empty waiting list",
+    result = counts(0),
+    message = "No agent sessions are waiting",
+    level = vim.log.levels.INFO,
+  },
+  {
+    name = "counts only",
+    result = counts(1),
+    message = "complete session details",
+    level = vim.log.levels.WARN,
+  },
+  {
+    name = "partial session list",
+    result = snapshot(2, { jump_session }),
+    message = "complete session details",
+    level = vim.log.levels.WARN,
+  },
+  {
+    name = "failed refresh",
+    result = { code = 1, stderr = "query failed" },
+    message = "query failed",
+    level = vim.log.levels.ERROR,
+  },
+  {
+    name = "invalid JSON",
+    result = { code = 0, stdout = "broken" },
+    message = "invalid JSON",
+    level = vim.log.levels.ERROR,
+  },
+  {
+    name = "refresh timeout",
+    result = { code = 124 },
+    message = "timed out",
+    level = vim.log.levels.ERROR,
+  },
+}) do
+  case("jump reports " .. fixture.name .. " without using stale sessions", function()
+    stub_system({ snapshot(1, { jump_session }), fixture.result, snapshot(1, { jump_session }) })
+    ring.setup({ interval = 0, notify = false })
+    wait_idle()
+    ring.jump()
+    wait_for(function()
+      return #notifications > 0
+    end, "jump did not report unavailable sessions")
+    assert(#selections == 0 and #calls == 2, "jump used cached sessions")
+    assert(notifications[1].message:find(fixture.message, 1, true), notifications[1].message)
+    assert(notifications[1].level == fixture.level)
+    ring.jump()
+    wait_for(function()
+      return #selections == 1
+    end, "failed jump could not be retried")
+    selections[1].callback(nil)
+  end)
+end
+
+case("a synchronous query spawn error releases the pending jump", function()
+  stub_system({ counts(0) })
+  ring.setup({ interval = 0, notify = false })
+  wait_idle()
+  vim.system = function()
+    error("query ENOENT")
+  end
+  ring.jump()
+  assert(notifications[1].message:find("query ENOENT", 1, true), notifications[1].message)
+  stub_system({ snapshot(1, { jump_session }) })
+  ring.jump()
+  wait_for(function()
+    return #selections == 1
+  end, "spawn error left jump stuck")
+  selections[1].callback(nil)
+end)
+
+for _, fixture in ipairs({
+  {
+    name = "focus failure",
+    result = { code = 1, stderr = "session has ended" },
+    message = "session has ended",
+  },
+  { name = "empty stderr", result = { code = 2, stderr = "" }, message = "code 2" },
+  { name = "focus timeout", result = { code = 124 }, message = "timed out after 15000ms" },
+}) do
+  case("jump reports " .. fixture.name .. " and permits retry", function()
+    stub_system({
+      counts(0),
+      snapshot(1, { jump_session }),
+      fixture.result,
+      snapshot(1, { jump_session }),
+    })
+    ring.setup({ interval = 0, notify = false })
+    wait_idle()
+    ring.jump()
+    wait_for(function()
+      return #selections == 1
+    end, "jump picker never opened")
+    selections[1].callback(jump_session)
+    wait_for(function()
+      return #notifications > 0
+    end, "focus error was not reported")
+    assert(notifications[1].message:find(fixture.message, 1, true), notifications[1].message)
+    assert(notifications[1].level == vim.log.levels.ERROR)
+    assert(ring.get_state().last_error == nil, "focus error polluted poll state")
+    ring.jump()
+    wait_for(function()
+      return #selections == 2
+    end, "focus error left jump stuck")
+    selections[2].callback(nil)
+  end)
+end
+
+case("jump reports a synchronous focus spawn failure", function()
+  stub_system({ counts(0), snapshot(1, { jump_session }) })
+  ring.setup({ interval = 0, notify = false })
+  wait_idle()
+  ring.jump()
+  wait_for(function()
+    return #selections == 1
+  end, "jump picker never opened")
+  vim.system = function()
+    error("focus ENOENT")
+  end
+  selections[1].callback(jump_session)
+  assert(notifications[1].message:find("focus ENOENT", 1, true), notifications[1].message)
+  stub_system({ snapshot(1, { jump_session }) })
+  ring.jump()
+  wait_for(function()
+    return #selections == 2
+  end, "focus spawn error left jump stuck")
+end)
+
+case("jump uses a separate command prefix and passes IDs without shell interpolation", function()
+  local session =
+    vim.tbl_extend("force", jump_session, { session_id = "codex:id with spaces; $(not-a-command)" })
+  stub_system({ counts(0), snapshot(1, { session }), { code = 0 } })
+  ring.setup({
+    interval = 0,
+    notify = false,
+    command = { "snapshot-wrapper" },
+    focus_command = { "focus-wrapper", "--profile", "work" },
+    focus_timeout = 9000,
+  })
+  wait_idle()
+  ring.jump()
+  wait_for(function()
+    return #selections == 1
+  end, "jump picker never opened")
+  selections[1].callback(session)
+  assert(vim.deep_equal(calls[2].command, { "snapshot-wrapper" }), vim.inspect(calls[2]))
+  assert(
+    vim.deep_equal(calls[3].command, { "focus-wrapper", "--profile", "work", session.session_id }),
+    vim.inspect(calls[3])
+  )
+  assert(calls[3].options.timeout == 9000)
+  assert(vim.deep_equal(ring.get_config().focus_command, { "focus-wrapper", "--profile", "work" }))
+end)
+
+case("jump validates focus configuration", function()
+  stub_system({})
+  for _, bad in ipairs({ "ring", {}, { "ring", false } }) do
+    assert_error(function()
+      ring.setup({ focus_command = bad })
+    end, "focus_command")
+  end
+  assert_error(function()
+    ring.setup({ focus_timeout = "slow" })
+  end, "focus_timeout must be a number")
+  assert_error(function()
+    ring.setup({ focus_timeout = 0 })
+  end, "focus_timeout must be greater than zero")
+end)
+
+case("jump can start before setup and still requires a selection", function()
+  stub_system({ snapshot(1, { jump_session }), { code = 0 } })
+  local fresh = assert(loadfile(root .. "/lua/ring/init.lua"))()
+  local ok, err = pcall(function()
+    fresh.jump()
+    wait_for(function()
+      return #selections == 1
+    end, "unconfigured jump did not start polling")
+    assert(#calls == 1 and #notifications == 0)
+    selections[1].callback(jump_session)
+    assert(vim.deep_equal(calls[2].command, { "ring", "focus", jump_session.session_id }))
+  end)
+  fresh.stop()
+  assert(ok, err)
+end)
+
+case("a picker callback cannot focus twice", function()
+  stub_system({ counts(0), snapshot(1, { jump_session }), { code = 0 } })
+  ring.setup({ interval = 0, notify = false })
+  wait_idle()
+  ring.jump()
+  wait_for(function()
+    return #selections == 1
+  end, "jump picker never opened")
+  selections[1].callback(jump_session)
+  selections[1].callback(jump_session)
+  assert(#calls == 3, "picker callback launched focus twice")
+end)
+
+case("stale focus completion does not report an error after stop", function()
+  stub_system({ counts(0), snapshot(1, { jump_session }) })
+  ring.setup({ interval = 0, notify = false })
+  wait_idle()
+  ring.jump()
+  wait_for(function()
+    return #selections == 1
+  end, "jump picker never opened")
+  local focus_callback
+  vim.system = function(_, _, callback)
+    focus_callback = callback
+    return {}
+  end
+  selections[1].callback(jump_session)
+  ring.stop()
+  focus_callback({ code = 1, stderr = "obsolete focus error" })
+  vim.wait(20)
+  assert(#notifications == 0, "stale focus completion still reported an error")
+end)
+
+for _, action in ipairs({ "stop", "setup" }) do
+  case(action .. " invalidates a pending picker selection", function()
+    stub_system({ counts(0), snapshot(1, { jump_session }), counts(0) })
+    ring.setup({ interval = 0, notify = false })
+    wait_idle()
+    ring.jump()
+    wait_for(function()
+      return #selections == 1
+    end, "jump picker never opened")
+    if action == "stop" then
+      ring.stop()
+    else
+      ring.setup({ interval = 0, notify = false })
+    end
+    local before = #calls
+    selections[1].callback(jump_session)
+    assert(#calls == before, "obsolete picker still launched focus")
+  end)
+end
+
+case("stopping invalidates a jump waiting on a query", function()
+  local callback
+  vim.system = function(_, _, on_exit)
+    callback = on_exit
+    return {}
+  end
+  ring.setup({ interval = 0, notify = false })
+  ring.jump()
+  ring.stop()
+  callback(snapshot(1, { jump_session }))
+  vim.wait(20)
+  assert(#selections == 0, "stopped query opened a picker")
+  ring.jump()
+  assert(notifications[1].message:find("stopped", 1, true), notifications[1].message)
+end)
+
+case("a broken picker is reported and does not leave jump busy", function()
+  stub_system({ counts(0), snapshot(1, { jump_session }), snapshot(1, { jump_session }) })
+  ring.setup({ interval = 0, notify = false })
+  wait_idle()
+  local select_stub = vim.ui.select
+  vim.ui.select = function()
+    error("picker exploded")
+  end
+  ring.jump()
+  wait_for(function()
+    return #notifications > 0
+  end, "picker failure was not reported")
+  assert(notifications[1].message:find("picker exploded", 1, true), notifications[1].message)
+  vim.ui.select = select_stub
+  ring.jump()
+  wait_for(function()
+    return #selections == 1
+  end, "picker failure left jump stuck")
+end)
+
+case("a failed picker cannot invoke a stored callback after a retry", function()
+  stub_system({ counts(0), snapshot(1, { jump_session }), snapshot(1, { jump_session }) })
+  ring.setup({ interval = 0, notify = false })
+  wait_idle()
+  local stored_callback
+  local select_stub = vim.ui.select
+  vim.ui.select = function(_, _, callback)
+    stored_callback = callback
+    error("picker failed before choosing")
+  end
+  ring.jump()
+  wait_for(function()
+    return #notifications == 1
+  end, "picker failure was not reported")
+  vim.ui.select = select_stub
+  ring.jump()
+  wait_for(function()
+    return #selections == 1
+  end, "retry picker never opened")
+  stored_callback(jump_session)
+  assert(#calls == 3, "failed picker launched an obsolete focus")
+end)
+
+case("a picker error after choosing does not unlatch an in-flight focus", function()
+  stub_system({ counts(0) })
+  ring.setup({ interval = 0, notify = false })
+  wait_idle()
+  local focus_callback
+  vim.system = function(command, options, callback)
+    calls[#calls + 1] = { command = command, options = options }
+    if command[2] == "focus" then
+      focus_callback = callback
+    else
+      callback(snapshot(1, { jump_session }))
+    end
+    return {}
+  end
+  vim.ui.select = function(_, _, callback)
+    callback(jump_session)
+    error("picker failed after choosing")
+  end
+  ring.jump()
+  wait_for(function()
+    return focus_callback ~= nil
+  end, "focus was never launched")
+  ring.jump()
+  assert(#calls == 3, "picker error duplicated an active focus")
+  focus_callback({ code = 0 })
 end)
 
 case(":RingNotifyToggle changes state and confirms the result", function()
@@ -674,6 +1130,10 @@ end)
 local failures = {}
 for _, item in ipairs(cases) do
   notifications = {}
+  selections = {}
+  vim.ui.select = function(items, opts, callback)
+    selections[#selections + 1] = { items = items, opts = opts, callback = callback }
+  end
   vim.notify = function(message, level, opts)
     notifications[#notifications + 1] = { message = message, level = level, opts = opts }
   end
@@ -682,6 +1142,7 @@ for _, item in ipairs(cases) do
   vim.system = real_system
   vim.health = real_health
   vim.notify = real_notify
+  vim.ui.select = real_select
   if ok then
     print("ok   - " .. item.name)
   else

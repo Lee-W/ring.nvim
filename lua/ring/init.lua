@@ -2,8 +2,10 @@ local M = {}
 
 local defaults = {
   command = { "ring", "--format", "json" },
+  focus_command = { "ring", "focus" },
   interval = 2000,
   timeout = 5000,
+  focus_timeout = 15000,
   icon = "🔴",
   error_icon = nil,
   hide_when_zero = true,
@@ -22,6 +24,8 @@ local started = false
 local shutdown = false
 local generation = 0
 local waiting_session_ids
+local jump_pending = false
+local jump_active = false
 local state = {
   waiting = 0,
   running = false,
@@ -125,11 +129,85 @@ local function notify_waiting(count, sessions)
   pcall(vim.notify, message, config.notify_level, { title = config.notify_title })
 end
 
+local function report_jump(message, level)
+  pcall(vim.notify, "ring.nvim: " .. message, level or vim.log.levels.ERROR, {
+    title = config.notify_title,
+  })
+end
+
+local function focus_session(session, current_generation)
+  local command = vim.deepcopy(config.focus_command)
+  -- Pass the full ID as one argv element, never a shell command or display prefix.
+  command[#command + 1] = session.session_id
+  local timeout = config.focus_timeout
+  local ok, err = pcall(vim.system, command, { text = true, timeout = timeout }, function(result)
+    vim.schedule(function()
+      if current_generation ~= generation then
+        return
+      end
+      jump_active = false
+      if result.code == TIMEOUT_CODE then
+        report_jump(("focus timed out after %dms"):format(timeout))
+      elseif result.code ~= 0 then
+        local message = vim.trim(result.stderr or "")
+        if message == "" then
+          message = ("focus exited with code %s"):format(tostring(result.code))
+        end
+        report_jump(message)
+      end
+    end)
+  end)
+  if not ok and current_generation == generation then
+    jump_active = false
+    report_jump(tostring(err))
+  end
+end
+
+local function select_waiting(waiting, err, sessions, current_generation)
+  if err or waiting == 0 or not sessions then
+    jump_active = false
+    if err then
+      report_jump(err)
+    elseif waiting == 0 then
+      report_jump("No agent sessions are waiting", vim.log.levels.INFO)
+    else
+      report_jump(":RingJump needs complete session details with unique IDs", vim.log.levels.WARN)
+    end
+    return
+  end
+
+  local answered = false
+  local ok, select_err = pcall(vim.ui.select, vim.deepcopy(sessions), {
+    prompt = "Jump to waiting agent:",
+    kind = "ring",
+    format_item = require("ring.notification").format_session,
+  }, function(session)
+    if answered or current_generation ~= generation then
+      return
+    end
+    answered = true
+    if not session then
+      jump_active = false
+      return
+    end
+    focus_session(session, current_generation)
+  end)
+  if not ok and current_generation == generation then
+    if not answered then
+      answered = true
+      jump_active = false
+    end
+    report_jump(tostring(select_err))
+  end
+end
+
 local function finish(current_generation, waiting, err, sessions)
   if current_generation ~= generation then
     return
   end
   state.running = false
+  local requested_jump = jump_pending
+  jump_pending = false
 
   local previous = state.waiting
   local changed = state.last_error ~= err or (waiting ~= nil and state.waiting ~= waiting)
@@ -145,6 +223,9 @@ local function finish(current_generation, waiting, err, sessions)
   end
   if waiting ~= nil and waiting ~= previous then
     run_on_change(waiting, previous)
+  end
+  if requested_jump and current_generation == generation then
+    select_waiting(waiting, err, sessions, current_generation)
   end
 end
 
@@ -177,6 +258,8 @@ local function teardown()
   generation = generation + 1
   started = false
   state.running = false
+  jump_pending = false
+  jump_active = false
   if timer then
     timer:stop()
     timer:close()
@@ -198,8 +281,7 @@ function M.refresh()
     end)
   end)
   if not ok then
-    state.running = false
-    state.last_error = vim.trim(tostring(err))
+    finish(current_generation, nil, vim.trim(tostring(err)))
   end
 end
 
@@ -225,8 +307,10 @@ end
 function M.setup(opts)
   opts = opts or {}
   check_type("command", opts.command, "table")
+  check_type("focus_command", opts.focus_command, "table")
   check_type("interval", opts.interval, "number")
   check_type("timeout", opts.timeout, "number")
+  check_type("focus_timeout", opts.focus_timeout, "number")
   check_type("icon", opts.icon, "string")
   check_type("error_icon", opts.error_icon, "string")
   check_type("hide_when_zero", opts.hide_when_zero, "boolean")
@@ -235,12 +319,14 @@ function M.setup(opts)
   check_type("notify_title", opts.notify_title, "string")
   check_type("on_change", opts.on_change, "function")
 
-  if opts.command then
-    local all_strings = vim.iter(opts.command):all(function(value)
-      return type(value) == "string"
-    end)
-    if #opts.command == 0 or not all_strings then
-      error("ring.nvim: command must be a non-empty list of strings", 0)
+  for _, name in ipairs({ "command", "focus_command" }) do
+    if opts[name] then
+      local all_strings = vim.iter(opts[name]):all(function(value)
+        return type(value) == "string"
+      end)
+      if #opts[name] == 0 or not all_strings then
+        error("ring.nvim: " .. name .. " must be a non-empty list of strings", 0)
+      end
     end
   end
   if opts.interval and opts.interval < 0 then
@@ -248,6 +334,9 @@ function M.setup(opts)
   end
   if opts.timeout and opts.timeout <= 0 then
     error("ring.nvim: timeout must be greater than zero", 0)
+  end
+  if opts.focus_timeout and opts.focus_timeout <= 0 then
+    error("ring.nvim: focus_timeout must be greater than zero", 0)
   end
 
   teardown()
@@ -272,6 +361,24 @@ function M.status()
     return ""
   end
   return config.icon .. tostring(state.waiting)
+end
+
+function M.jump()
+  if shutdown then
+    report_jump("polling is stopped; call setup() before jumping", vim.log.levels.WARN)
+    return
+  end
+  if jump_active then
+    return
+  end
+  jump_active = true
+  jump_pending = true
+  if started then
+    -- An in-flight refresh will serve the pending picker; otherwise start a fresh poll.
+    M.refresh()
+  else
+    M.start()
+  end
 end
 
 function M.get_state()

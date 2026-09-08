@@ -72,6 +72,10 @@ local function session_detail(session)
   return shorten("  " .. reason .. (detail and (": " .. detail) or ""), MAX_DETAIL_CHARS)
 end
 
+function M.format_session(session)
+  return session_summary(session) .. " — " .. vim.trim(session_detail(session))
+end
+
 function M.format(count, sessions)
   local headline = count == 1 and "An agent session is waiting for you"
     or ("%d agent sessions are waiting for you"):format(count)

@@ -66,8 +66,10 @@ Defaults: >lua
 
     require("ring").setup({
       command = { "ring", "--format", "json" },
+      focus_command = { "ring", "focus" },
       interval = 2000,
       timeout = 5000,
+      focus_timeout = 15000,
       icon = "🔴",
       error_icon = nil,
       hide_when_zero = true,
@@ -84,15 +86,28 @@ command ~
         the output is parsed as RiNG's JSON. Must be a non-empty list of
         strings.
 
+                                                       *ring-focus_command*
+focus_command ~
+        Non-empty list of strings. Defaults to `{ "ring", "focus" }`.
+        The selected session's full ID is appended as one argument and the
+        command is run asynchronously, without a shell. This prefix is
+        independent of |ring-command|; configure both when using a custom
+        executable or wrapper.
+        |:checkhealth| ring checks both configured executables.
+
 interval ~
         Number of milliseconds between polls. `0` disables periodic polling;
-        the count then only updates on |:RingRefresh| or the initial
+        the count then only updates on |:RingRefresh|, |:RingJump|, or the initial
         |ring.setup()|.
 
 timeout ~
         Milliseconds before a single `ring` invocation is killed. A timeout is
         reported separately from an ordinary failure. Must be greater than
         zero.
+
+focus_timeout ~
+        Milliseconds allowed for `ring focus`. Defaults to `15000`, separately
+        from the polling timeout. Must be greater than zero.
 
 icon ~
         String prefixed to the waiting count, e.g. `🔴` renders as `🔴3`.
@@ -158,6 +173,25 @@ on_change ~
                         interval tick. A refresh already in flight is not
                         duplicated.
 
+                                                               *:RingJump*
+:RingJump               Refresh the snapshot, then choose a waiting session
+                        with |vim.ui.select()|. If a poll is already running,
+                        use its result. Show all waiting sessions with their
+                        project/label, provider, short ID, and waiting reason.
+                        Selecting an entry asynchronously runs |ring-focus_command|
+                        with its full session ID. Cancelling does nothing.
+
+                        RiNG decides the destination: when its TUI is running,
+                        it focuses the TUI and selects the session; otherwise
+                        it focuses the session's terminal. Terminal focus must
+                        be supported and configured in RiNG.
+
+                        Empty results, incomplete session details, errors and
+                        timeouts are reported; failed polls never use old
+                        cached sessions. Repeated calls during an active jump
+                        are ignored. These messages are not disabled by
+                        |ring-notify|. No key mappings are installed.
+
                                                          *:RingNotifyToggle*
 :RingNotifyToggle       Toggle waiting notifications for the current Neovim
                         session and confirm the new state. The initial state
@@ -181,6 +215,13 @@ ring.status()
 ring.refresh()
         Trigger one poll. No-op while a refresh is in flight or after
         |ring.stop()|.
+
+                                                             *ring.jump()*
+ring.jump()
+        Same as |:RingJump|. Starts polling on first use. If explicitly stopped
+        with |ring.stop()|, reports that |ring.setup()| is needed to resume.
+        Calling stop() or setup() invalidates pending picker callbacks; it
+        does not undo a focus command that has already been launched.
 
                                                              *ring.stop()*
 ring.stop()
